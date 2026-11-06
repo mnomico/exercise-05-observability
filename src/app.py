@@ -1,10 +1,10 @@
 import time
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from src.database import Base, engine, get_db
+from src.database import Base, SessionLocal, engine, get_db
 from src.models import Node
 from src.schemas import NodeCreate, NodeResponse, NodeUpdate
 
@@ -21,6 +21,19 @@ REQUEST_LATENCY = Histogram(
     "HTTP request latency in seconds",
     ["method", "endpoint"],
 )
+ACTIVE_NODES = Gauge("active_nodes", "Number of nodes with status active")
+
+def count_active_nodes() -> float:
+    # Evaluated on every scrape, so the value always reflects the database.
+    db = SessionLocal()
+    try:
+        return db.query(Node).filter(Node.status == "active").count()
+    except Exception:
+        return float("nan")
+    finally:
+        db.close()
+
+ACTIVE_NODES.set_function(count_active_nodes)
 
 @app.middleware("http")
 async def prometheus_middleware(request: Request, call_next):
