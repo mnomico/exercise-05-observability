@@ -1,5 +1,7 @@
+import time
 from datetime import datetime, timezone
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from src.database import Base, engine, get_db
@@ -8,6 +10,37 @@ from src.schemas import NodeCreate, NodeResponse, NodeUpdate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"],
+)
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["method", "endpoint"],
+)
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        # Label by route template (/api/nodes/{name}), not the raw path,
+        # to keep label cardinality bounded.
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", "unmatched")
+        REQUEST_LATENCY.labels(request.method, endpoint).observe(time.perf_counter() - start)
+        REQUEST_COUNT.labels(request.method, endpoint, str(status)).inc()
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
